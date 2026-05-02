@@ -10,7 +10,7 @@ from mediapipe.tasks.python import vision
 class RobustRPPG:
     def __init__(self, buffer_size=300, fs=30):
         self.buffer_size = buffer_size
-        self.fs = fs
+        self.fs = float(fs)
 
         # Per-ROI RGB buffers (forehead, left cheek, right cheek)
         self.roi_buffers = [[], [], []]
@@ -127,6 +127,13 @@ class RobustRPPG:
         high = min(3.0 / nyq, 0.99)
         b, a = signal.butter(2, [low, high], btype='bandpass')
         return signal.filtfilt(b, a, sig)
+
+    def smooth_pulse(self, sig):
+        """Simple moving-average smoothing to reduce frame-to-frame noise."""
+        if len(sig) < 5:
+            return sig
+        kernel = np.ones(5) / 5.0
+        return np.convolve(sig, kernel, mode='same')
 
     # -------------------------------------------------------------------------
     # Per-ROI spectral SNR helper
@@ -376,7 +383,8 @@ class RobustRPPG:
 
     def draw_waveform(self, frame):
         h, w, _ = frame.shape
-        sig = self.last_pulse_sig[-min(len(self.last_pulse_sig), self.fs * 3):]
+        window_len = int(min(len(self.last_pulse_sig), self.fs * 3))
+        sig = self.last_pulse_sig[-window_len:]
 
         box_x, box_y, box_w, box_h = 10, h - 110, 300, 90
         ov = frame.copy()
@@ -403,6 +411,9 @@ class RobustRPPG:
     # -------------------------------------------------------------------------
     def run(self):
         cap = cv2.VideoCapture(0)
+        cam_fps = float(cap.get(cv2.CAP_PROP_FPS))
+        if cam_fps > 1.0:
+            self.fs = cam_fps
 
         fh_ids = [10, 67, 103, 109, 151, 338, 297, 332]
         lc_ids = [234, 93, 132, 58, 172, 136, 150, 149]
@@ -463,6 +474,7 @@ class RobustRPPG:
 
                     # Quality-weighted per-ROI pulse fusion
                     pulse_sig = self.fused_pulse_weighted(roi_arrays, roi_pixel_counts)
+                    pulse_sig = self.smooth_pulse(pulse_sig)
                     self.last_pulse_sig = pulse_sig
 
                     # Multi-window consensus BPM + confidence
